@@ -1,2 +1,19 @@
-# Secrets
+# Secrets (real values stay on your computer only)
 .env
+*.env
+!.env.example
+
+# Build output
+bin/
+*.exe
+
+# Test and coverage files
+*.test
+*.out
+coverage.html
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
