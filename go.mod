@@ -1,5 +1,4 @@
-module github.com/yourname/stockpulse
+module github.com/kruthi-meghana/stockpulse
 
 go 1.24
 
-require github.com/jackc/pgx/v5 v5.7.5
