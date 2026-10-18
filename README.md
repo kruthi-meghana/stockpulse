@@ -1,6 +1,6 @@
 # Stockpulse
 
-A Go service that receives Shopify order webhooks, updates inventory in PostgreSQL through a concurrent worker pool, and sends low-stock alerts.
+A Go service that receives Shopify order webhooks, queues them in RabbitMQ, updates inventory in PostgreSQL through a pool of workers, and sends low-stock alerts.
 
 It is small on purpose, but it handles the problems real webhook systems face: forged requests, duplicate deliveries, crashes mid-processing, concurrent stock updates and clean shutdowns.
 
@@ -9,15 +9,15 @@ It is small on purpose, but it handles the problems real webhook systems face: f
 ```
 Shopify ──POST──▶ API server ──save──▶ PostgreSQL
                       │                    ▲
-                   enqueue                 │ transaction
+                   publish                 │ transaction
                       ▼                    │
-                 Go channel ──▶ Worker pool ──▶ Alert notifier
+                  RabbitMQ ──▶ Worker pool ──▶ Alert notifier
 ```
 
-1. **API** (`internal/api`) verifies the HMAC signature, saves the raw event, pushes its ID onto the queue and returns `200` straight away.
-2. **Queue** (`internal/queue`) is a buffered channel shared by the API and the workers. Only event IDs travel through it; the database stays the source of truth.
-3. **Workers** (`internal/worker`) are N goroutines that load each event, decrement stock and mark the event done in one transaction, then alert on low stock.
-4. **Startup recovery:** events left `pending` (because of a crash or a full queue) are re-queued when the service starts.
+1. **API** (`internal/api`) verifies the HMAC signature, saves the raw event, publishes its ID to RabbitMQ and returns `200` straight away.
+2. **Queue** (`internal/queue`) publishes and consumes messages through RabbitMQ. Only event IDs travel through it; the database stays the source of truth.
+3. **Workers** (`internal/worker`) consume event IDs, decrement stock and mark the event done in one transaction, then acknowledge the message. Unacknowledged messages are redelivered by RabbitMQ.
+4. **Startup recovery:** events left `pending` (because publishing failed) are re-published when the service starts.
 
 ## Project layout
 
@@ -26,7 +26,7 @@ cmd/stockpulse/main.go     composition root: builds everything, handles startup 
 internal/config            environment variables
 internal/domain            shared types: Order, LineItem, Event, Product
 internal/api               router, middleware, webhook handler, HMAC check
-internal/queue             buffered-channel job queue
+internal/queue             RabbitMQ publisher and consumer
 internal/worker            worker pool and order processor
 internal/store             PostgreSQL access (pgx)
 internal/alert             Notifier interface with log and SMTP implementations
@@ -45,8 +45,10 @@ scripts/                   signed test-webhook sender
 | Slow processing makes Shopify time out | Respond immediately and process asynchronously |
 | Deploys and restarts | `signal.NotifyContext`, `http.Server.Shutdown` and draining in-flight jobs |
 | Testability | Small consumer-side interfaces (`EventStore`, `Store`, `Notifier`) with fakes in tests |
+| Worker crashes before finishing        | Manual acks: a message is acknowledged only after its transaction commits, so RabbitMQ redelivers it otherwise |
+| RabbitMQ restarts                      | Durable queue and persistent messages                                                              |
 
-Coming from .NET: `main.go` plays the role of `Program.cs` with DI registration, interfaces work like `IRepository` abstractions but are satisfied implicitly, and goroutines plus channels replace `BackgroundService` and `Channel<T>`.
+Coming from .NET: `main.go` plays the role of `Program.cs` with DI registration, interfaces work like `IRepository` abstractions but are satisfied implicitly, and goroutines consuming from RabbitMQ replace `BackgroundService` with a message-broker client.
 
 ## Run it
 
@@ -58,6 +60,7 @@ make test            # unit tests with the race detector
 make up              # Postgres plus the app on :8080
 make webhook         # send a signed test order
 make logs            # watch it get processed
+RabbitMQ dashboard: http://localhost:15672 (guest / guest)
 ```
 
 To check the database:
@@ -79,7 +82,7 @@ docker compose exec db psql -U stockpulse -c "select * from products"
 
 ## Roadmap
 
-- Retry `failed` events with exponential backoff
+- Retry `failed` events with a dead-letter queue and exponential backoff
 - Periodic sweeper for `pending` events, not just at startup
 - Prometheus metrics: queue depth, processing latency, failures
 - Integration tests against real Postgres with testcontainers-go

@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:17          
+    environment:
+      POSTGRES_USER: ${POSTGRES_USERNAME}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}   
+    ports:
+      - "${POSTGRES_PORT}:5432"             
+    volumes:
+      - pg_data: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USERNAME} -d ${DATABASE_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: ${RABBITMQ_CONTAINERNAME}
+    hostname: stockpulse-rabbitmq 
+    ports:
+      - "${RABBITMQ_AMQP_PORT}:5672"   # AMQP protocol port
+      - "${RABBITMQ_MANAGMENT_PORT}:15672" # Management UI web port
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+
+volumes:
+  pg_data:
+  rabbitmq_data:
